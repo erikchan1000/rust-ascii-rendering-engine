@@ -1,163 +1,116 @@
-
-use std::io::{stdout, Write};
-use std::time::{Duration, Instant};
-use std::thread::sleep;
-
-use crossterm::{
-    cursor,
-    event::{self, Event, KeyCode},
-    execute,
-    style::{Color, Print, ResetColor, SetForegroundColor},
-    terminal::{self, Clear, ClearType}
-};
-
-use clap::Parser;
-
+// main.rs
 mod video_extraction;
-mod ascii_converter;
 
-use video_extraction::{Config, Frame, VideoReader};
-use ascii_converter::{AsciiConverter, AsciiFrame, CharacterSet};
+use std::path::Path;
+use std::io::{self, Write, BufRead};
+use std::env;
+use video_extraction::VideoExtractor;
 
-
-#[derive(Parser, Debug)]
-#[clap(author, version, about, long_about = None)]
-struct Args {
-
-    #[clap(short, long)]
-    input: String,
-
-    #[clap(short, long, default_value_t = 80)]
-    width: u32,
-
-    #[clap(short, long, default_value_t = 40)]
-    height: u32,
-
-    #[clap(short, long, default_value = "standard")]
-    charset: String,
-
-    #[clap(short, long)]
-    color: bool,
-
-    #[clap(short, long)]
-    fps: Option<f64>,
-
-    #[clap(long, default_value_t = 1)]
-    skip: u32,
-}
-
-fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
-
-    let config = Config {
-        resolution: Some((args.width * 2, args.height * 2)),
-        color: args.color,
-        frame_rate: args.fps,
-        skip_frames: args.skip,
-        ..Default::default()
+fn main() -> Result<(), std::io::Error> {
+    // Get video path from arguments or use default
+    let args: Vec<String> = env::args().collect();
+    let video_path = if args.len() > 1 {
+        &args[1]
+    } else {
+        println!("No video path provided. Using default 'input_video.mp4'");
+        "input_video.mp4"
     };
 
-    let mut reader = VideoReader::new(&args.input, Some(config))?;
-    reader.open()?;
+    // Create a new VideoExtractor
+    let mut extractor = VideoExtractor::new(video_path)?;
 
-    let duration = reader.duration();
-    let native_frame_rate = reader.frame_rate();
-    let (width, height) = reader.target_dimensions();
-
-    let char_set = match args.charset.as_str() {
-        "simple" => CharacterSet::Simple,
-        "extended" => CharacterSet::Extended,
-        _ => CharacterSet::Standard,
-    };
-
-    let converter = AsciiConverter::new(args.width, args.height, char_set, args.color);
-
-    println!("Video: {}", args.input);
-    println!("Duration: {:.2} seconds", duration);
-    println!("Frame rate: {:.2} fps", native_frame_rate);
-    println!("Resolution: {}x{}", width, height);
-    println!("ASCII output: {}x{}", args.width, args.height);
-    println!("\nPress Space to pause/resume, Q to quit");
-    println!("\nStarting playback in 2 seconds...");
-    sleep(Duration::from_secs(2));
-
-    setup_terminal()?;
-
-    let result = play_video(&mut reader, &converter, args.fps.unwrap_or(native_frame_rate));
-
-    restore_terminal()?;
-
-    result
-}
-
-fn setup_terminal() -> Result<(), std::io::Error> {
-    terminal::enable_raw_mode()?;
-    let mut stdout = stdout();
-    execute!(
-        stdout,
-        terminal::EnterAlternateScreen,
-        cursor::Hide,
-        Clear(ClearType::All)
-    )?;
-    Ok(())
-}
-
-fn restore_terminal() -> Result<(), std::io::Error> {
-    let mut stdout = stdout();
-    execute!(
-        stdout,
-        terminal::LeaveAlternateScreen,
-        cursor::Show,
-        ResetColor
-    )?;
-    terminal::disable_raw_mode()?;
-    Ok(())
-}
-
-fn play_video(
-    reader: &mut VideoReader,
-    converter: &AsciiConverter,
-    frame_rate: f64,
-) -> anyhow::Result<()> {
-    let mut stdout = stdout();
-    let frame_duration = Duration::from_secs_f64(1.0 / frame_rate);
-    let mut paused = false;
-    let mut last_frame_time = Instant::now();
-
-    while let Ok(frame) = reader.next_frame() {
-
-        if event::poll(Duration::from_millis(0))? {
-            if let Event::Key(key_event) = event::read()? {
-                match key_event.code {
-                    KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Char(' ') => paused = !paused,
-                    _ => {}
-                }
-            }
+    // Load metadata (dimensions, frame count, duration)
+    match extractor.load_metadata() {
+        Ok(_) => (),
+        Err(e) => {
+            eprintln!("Error loading video metadata: {}", e);
+            eprintln!("Make sure FFmpeg is installed and the video file exists.");
+            return Err(e);
         }
-
-        if paused {
-
-            sleep(Duration::from_millis(100));
-            continue;
-        }
-
-        let ascii_frame = converter.convert(&frame);
-
-        let elapsed = last_frame_time.elapsed();
-        if elapsed < frame_duration {
-            sleep(frame_duration - elapsed);
-        }
-
-        render_ascii_frame(&mut stdout, &ascii_frame)?;
-
-        last_frame_time = Instant::now();
     }
 
+    // Print video information
+    if let Some((width, height)) = extractor.dimensions() {
+        println!("Video dimensions: {}x{}", width, height);
+    } else {
+        println!("Video dimensions: Unknown");
+    }
+
+    if let Some(frame_count) = extractor.frame_count() {
+        println!("Estimated frame count: {}", frame_count);
+    } else {
+        println!("Estimated frame count: Unknown");
+    }
+
+    if let Some(duration) = extractor.duration() {
+        println!("Video duration: {:.2} seconds", duration);
+    } else {
+        println!("Video duration: Unknown");
+    }
+
+    // Display options
+    io::stdout().flush()?;
+
+    // Read user input
+    let stdin = io::stdin();
+    let mut handle = stdin.lock();
+
+    if extractor.duration().is_none() {
+        println!("Cannot play as ASCII: Video duration is unknown.");
+        return Ok(());
+    }
+
+    // Get ASCII dimensions
+    print!("Enter ASCII width (characters): ");
+    io::stdout().flush()?;
+    let mut width_str = String::new();
+    handle.read_line(&mut width_str)?;
+    let width: u32 = match width_str.trim().parse() {
+        Ok(val) => val,
+        Err(_) => {
+            println!("Invalid width, using default of 80 characters");
+            80
+        }
+    };
+
+    print!("Enter ASCII height (characters): ");
+    io::stdout().flush()?;
+    let mut height_str = String::new();
+    handle.read_line(&mut height_str)?;
+    let height: u32 = match height_str.trim().parse() {
+        Ok(val) => val,
+        Err(_) => {
+            println!("Invalid height, using default of 30 characters");
+            30
+        }
+    };
+
+    // Get playback speed
+    print!("Enter frame delay in milliseconds (e.g., 100): ");
+    io::stdout().flush()?;
+    let mut delay_str = String::new();
+    handle.read_line(&mut delay_str)?;
+    let delay: u64 = match delay_str.trim().parse() {
+        Ok(val) => val,
+        Err(_) => {
+            println!("Invalid delay, using default of 100ms");
+            100
+        }
+    };
+
+    // Ask if brightness should be inverted
+    print!("Invert brightness? (y/n): ");
+    io::stdout().flush()?;
+    let mut invert_str = String::new();
+    handle.read_line(&mut invert_str)?;
+    let invert = invert_str.trim().to_lowercase() == "y";
+
+    // Configure ASCII rendering in the extractor
+    extractor.configure_ascii(width, height, invert);
+
+    // Play the video directly as ASCII
+    println!("Playing video as ASCII art (press Ctrl+C to stop)...");
+    extractor.play_as_ascii(delay)?;
+
     Ok(())
-}
-
-fn render_ascii_frame(stdout: &mut impl Write, frame: &AsciiFrame) -> Result<(), std::io::Error> {
-
-    ascii_converter::render_ascii_frame_impl(stdout, frame, frame.data.first().and_then(|c| c.color).is_some())
 }

@@ -10,4 +10,6 @@ anyhow = "1.0.97"
 clap = { version = "4.5.32", features = ["derive"] }
 crossterm = "0.28.1"
 ffmpeg-next = "7.1.0"
+glob = "0.3.2"
 image = "0.25.5"
+rayon = "1.10.0"
