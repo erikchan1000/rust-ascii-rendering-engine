@@ -1,4 +1,3 @@
-
 use std::path::Path;
 use std::process::Command;
 use std::io::{self, Error, ErrorKind};
@@ -22,6 +21,7 @@ use ratatui::{
 };
 
 use image::GenericImageView;
+use rodio::{Decoder, OutputStream, Sink, Source};
 
 const ASCII_CHARS: &str = " .,:;i1tfLCG08@";
 
@@ -35,6 +35,8 @@ pub struct VideoExtractor {
     ascii_width: Option<u32>,
     ascii_height: Option<u32>,
     ascii_invert: bool,
+    audio_enabled: bool,
+    audio_volume: f32,
 }
 
 impl VideoExtractor {
@@ -42,6 +44,11 @@ impl VideoExtractor {
         self.ascii_width = Some(width);
         self.ascii_height = Some(height);
         self.ascii_invert = invert;
+    }
+
+    pub fn configure_audio(&mut self, enabled: bool, volume: f32) {
+        self.audio_enabled = enabled;
+        self.audio_volume = volume.max(0.0).min(1.0);
     }
 
     fn pixel_to_ascii(&self, r: u8, g: u8, b: u8) -> char {
@@ -115,6 +122,8 @@ impl VideoExtractor {
             ascii_width: None,
             ascii_height: None,
             ascii_invert: false,
+            audio_enabled: true,
+            audio_volume: 0.5,
         };
 
         if !Path::new(path_str).exists() {
@@ -221,6 +230,35 @@ impl VideoExtractor {
         Ok(ascii_art)
     }
 
+    fn extract_audio(&self, temp_dir: &Path) -> Result<String, Error> {
+        let audio_file = temp_dir.join("audio.wav");
+        let audio_path = audio_file.to_str().ok_or_else(|| {
+            Error::new(ErrorKind::Other, "Failed to create audio file path")
+        })?;
+
+        let status = Command::new("ffmpeg")
+            .args(&[
+                "-hide_banner",
+                "-loglevel", "error",
+                "-i", &self.file_path,
+                "-vn", // No video
+                "-acodec", "pcm_s16le", // Convert to WAV
+                "-ar", "44100", // 44.1kHz sample rate
+                "-ac", "2", // Stereo
+                audio_path
+            ])
+            .status()?;
+
+        if !status.success() {
+            return Err(Error::new(
+                ErrorKind::Other,
+                "Failed to extract audio"
+            ));
+        }
+
+        Ok(audio_path.to_string())
+    }
+
     pub fn play_as_ascii(&self, frame_delay_ms: u64) -> Result<(), Error> {
         if self.ascii_width.is_none() || self.ascii_height.is_none() {
             return Err(Error::new(
@@ -284,6 +322,18 @@ impl VideoExtractor {
             })
             .collect();
 
+        let audio_path = if self.audio_enabled {
+            match self.extract_audio(&temp_dir) {
+                Ok(path) => {
+                    println!("Audio extracted.");
+                    Some(path)
+                },
+                Err(_) => None
+            }
+        } else {
+            None
+        };
+
         println!("ASCII conversion complete. Starting playback...");
         println!("Press 'q' to quit, 'p' to pause/play, arrow keys to adjust speed");
 
@@ -307,6 +357,16 @@ impl VideoExtractor {
             .file_name()
             .unwrap_or_else(|| std::ffi::OsStr::new("video"))
             .to_string_lossy();
+
+        let (_stream, stream_handle) = match OutputStream::try_default() {
+            Ok((s, h)) => (s, h),
+            Err(_) => return Err(Error::new(ErrorKind::Other, "Failed to initialize audio output"))
+        };
+
+        let sink = Sink::try_new(&stream_handle).map_err(|_| Error::new(ErrorKind::Other, "Failed to create audio sink")?);
+        sink.set_volume(self.audio_volume);
+        let mut audio_muted = false;
+        let mut current_volume = self.audio_volume;
 
         thread::spawn(move || {
             loop {
@@ -358,6 +418,22 @@ impl VideoExtractor {
                             current_frame += 10;
                         }
                     },
+                    KeyCode::Char('+') => {
+                        current_volume = (current_volume + 0.1).min(1.0);
+                        if !audio_muted {
+                            if let Ok(sink) = sink.lock() {
+                                sink.set_volume(current_volume);
+                            }
+                        }
+                    },
+                    KeyCode::Char('-') => {
+                        current_volume = (current_volume - 0.1).max(0.0);
+                        if !audio_muted {
+                            if let Ok(sink) = sink.lock() {
+                                sink.set_volume(current_volume);
+                            }
+                        }
+                    },
                     _ => {}
                 }
             }
@@ -382,13 +458,32 @@ impl VideoExtractor {
                     ])
                     .split(size);
 
+                let volume_status = if audio_muted {
+                    "Muted"
+                } else {
+                    match (current_volume * 10.0).round() as i32 {
+                        0 => "Volume: 0%",
+                        1 => "Volume: 10%",
+                        2 => "Volume: 20%",
+                        3 => "Volume: 30%",
+                        4 => "Volume: 40%",
+                        5 => "Volume: 50%",
+                        6 => "Volume: 60%",
+                        7 => "Volume: 70%",
+                        8 => "Volume: 80%",
+                        9 => "Volume: 90%",
+                        _ => "Volume: 100%"
+                    }
+                };
+
                 let status = format!(
                     "Playing: {} | Frame: {}/{} | FPS: {:.1} | {}",
                     video_name,
                     current_frame + 1,
                     total_frames,
                     1000.0 / current_delay as f64,
-                    if paused { "PAUSED" } else { "PLAYING" }
+                    if paused { "PAUSED" } else { "PLAYING" },
+                    volume_status
                 );
 
                 let status_widget = Paragraph::new(status)
@@ -400,7 +495,9 @@ impl VideoExtractor {
                 let ascii_widget = Paragraph::new(ascii_content.to_string())
                     .style(Style::default());
 
-                let controls = "Controls: q - Quit | p - Pause/Play | ← → - Change Speed | ↑ ↓ - Skip 10 Frames";
+
+                let controls = "Controls: q - Quit | p - Pause/Play | m - Mute/Unmute | +/- - Volume | ← → - Change Speed | ↑ ↓ - Skip 10 Frames";
+
                 let controls_widget = Paragraph::new(controls)
                     .block(Block::default().borders(Borders::ALL))
                     .alignment(Alignment::Center)
