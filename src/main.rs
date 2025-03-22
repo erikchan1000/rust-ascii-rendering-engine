@@ -1,7 +1,5 @@
-// main.rs
 mod video_extraction;
 
-use std::path::Path;
 use std::io::{self, Write, BufRead};
 use std::env;
 use video_extraction::VideoExtractor;
@@ -61,10 +59,8 @@ fn main() -> Result<(), std::io::Error> {
         println!("Video duration: Unknown");
     }
 
-    // Display options
     io::stdout().flush()?;
 
-    // Read user input
     let stdin = io::stdin();
     let mut handle = stdin.lock();
 
@@ -73,7 +69,6 @@ fn main() -> Result<(), std::io::Error> {
         return Ok(());
     }
 
-    // Get ASCII dimensions
     print!("Enter ASCII width (characters): ");
     io::stdout().flush()?;
     let mut width_str = String::new();
@@ -98,7 +93,6 @@ fn main() -> Result<(), std::io::Error> {
         }
     };
 
-    // Get playback speed
     print!("Enter frame delay in milliseconds (e.g., 100): ");
     io::stdout().flush()?;
     let mut delay_str = String::new();
@@ -111,17 +105,14 @@ fn main() -> Result<(), std::io::Error> {
         }
     };
 
-    // Ask if brightness should be inverted
     print!("Invert brightness? (y/n): ");
     io::stdout().flush()?;
     let mut invert_str = String::new();
     handle.read_line(&mut invert_str)?;
     let invert = invert_str.trim().to_lowercase() == "y";
 
-    // Configure ASCII rendering in the extractor
     extractor.configure_ascii(width, height, invert);
 
-    // Play the video directly as ASCII
     println!("Playing video as ASCII art (press Ctrl+C to stop)...");
     extractor.play_as_ascii(delay)?;
 
