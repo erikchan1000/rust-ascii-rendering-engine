@@ -7,19 +7,33 @@ use std::env;
 use video_extraction::VideoExtractor;
 
 fn main() -> Result<(), std::io::Error> {
-    // Get video path from arguments or use default
     let args: Vec<String> = env::args().collect();
-    let video_path = if args.len() > 1 {
-        &args[1]
-    } else {
-        println!("No video path provided. Using default 'input_video.mp4'");
-        "input_video.mp4"
-    };
+    let mut video_path = "input_video.mp4";
+    let mut audio_enabled = false;
 
-    // Create a new VideoExtractor
-    let mut extractor = VideoExtractor::new(video_path)?;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--input" => {
+                if i + 1 < args.len() {
+                    video_path = &args[i + 1];
+                    i += 1;
+                }
+            },
+            "--audio" => {
+                audio_enabled = true;
+            },
+            _ => {
+                if !args[i].starts_with("--") {
+                    video_path = &args[i];
+                }
+            }
+        }
+        i += 1;
+    }
 
-    // Load metadata (dimensions, frame count, duration)
+    let mut extractor = VideoExtractor::new(video_path, audio_enabled)?;
+
     match extractor.load_metadata() {
         Ok(_) => (),
         Err(e) => {
@@ -29,7 +43,6 @@ fn main() -> Result<(), std::io::Error> {
         }
     }
 
-    // Print video information
     if let Some((width, height)) = extractor.dimensions() {
         println!("Video dimensions: {}x{}", width, height);
     } else {

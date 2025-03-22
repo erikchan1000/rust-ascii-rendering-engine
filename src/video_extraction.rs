@@ -48,11 +48,6 @@ impl VideoExtractor {
         self.ascii_invert = invert;
     }
 
-    pub fn configure_audio(&mut self, enabled: bool, volume: f32) {
-        self.audio_enabled = enabled;
-        self.audio_volume = volume.max(0.0).min(1.0); // Clamp volume between 0.0 and 1.0
-    }
-
     fn pixel_to_ascii(&self, r: u8, g: u8, b: u8) -> char {
         let brightness = 0.2126 * (r as f32) +
                          0.7152 * (g as f32) +
@@ -106,7 +101,7 @@ impl VideoExtractor {
         Ok(ascii_art)
     }
 
-    pub fn new<P: AsRef<Path>>(file_path: P) -> Result<Self, Error> {
+    pub fn new<P: AsRef<Path>>(file_path: P, audio: bool) -> Result<Self, Error> {
         let path_str = file_path.as_ref()
             .to_str()
             .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "Invalid file path"))?;
@@ -120,7 +115,7 @@ impl VideoExtractor {
             ascii_width: None,
             ascii_height: None,
             ascii_invert: false,
-            audio_enabled: true,
+            audio_enabled: audio,
             audio_volume: 0.5,
         };
 
@@ -373,7 +368,7 @@ impl VideoExtractor {
 
         // Setup audio playback - make it optional
         let mut audio_setup_success = false;
-        let (_stream, stream_handle, sink) = match OutputStream::try_default() {
+        let (_stream, _, sink) = match OutputStream::try_default() {
             Ok((stream, handle)) => {
                 match Sink::try_new(&handle) {
                     Ok(sink) => {
@@ -389,13 +384,11 @@ impl VideoExtractor {
             Err(e) => {
                 eprintln!("Warning: Failed to initialize audio output: {}", e);
                 // Create dummy values that won't be used
-                let (stream, handle) = match OutputStream::try_from_device(&rodio::DeviceId::dummy()) {
+                let (stream, handle) = match OutputStream::try_default() {
                     Ok(result) => result,
                     Err(_) => {
-                        // Really can't create any audio, return dummy values
-                        struct DummyStream;
-                        struct DummyHandle;
-                        (DummyStream, DummyHandle)
+                        eprintln!("Warning: Failed to create dummy audio output");
+                        OutputStream::try_default().unwrap()
                     }
                 };
                 (stream, handle, None)
